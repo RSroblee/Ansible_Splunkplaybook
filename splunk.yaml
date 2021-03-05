@@ -1,0 +1,124 @@
+---
+- hosts: all
+  gather_facts: false
+  vars:
+    splunkforwarder: wget -O splunkforwarder-8.1.2-545206cc9f70-linux-2.6-x86_64.rpm 'https://www.splunk.com/bin/splunk/DownloadActivityServlet?architecture=x86_64&platform=linux&version=8.1.2&product=universalforwarder&filename=splunkforwarder-8.1.2-545206cc9f70-linux-2.6-x86_64.rpm&wget=true'
+    client: https://raxglobal-my.sharepoint.com/:u:/r/personal/alan_rothwell_rackspace_co_uk/Documents/Installs/zzz_deploymentclient/10_dot_network_devices/zzz_deploymentclient.zip?csf=1&web=1&e=o8Kywd
+    splunkforwarder_install: rpm -ivh splunkforwarder-8.1.2-545206cc9f70-linux-2.6-x86_64.rpm
+    splunk download directory: /home/rack/
+    serverconf: /opt/splunkforwarder/etc/system/local/server.conf
+    inputconf: /opt/splunkforwarder/etc/system/local/inputs.conf
+
+  tasks:
+    - name: Create a temporary directory
+      become: true
+      file:
+        path: "{{ splunk download directory }}"
+        state: directory
+        mode: '0750'
+        owner: root
+        group: root
+
+    - name: Download splunkforwarder
+      become: true
+      get_url:
+        url: "{{ splunkforwarder }}"
+        dest: "{{ splunk download directory }}"
+        mode: '0700'
+        owner: root
+        group: root
+
+    - name: Install splunkforwarder
+      become: true
+      yum:
+        name: "{{ splunk download directory }}{{ splunkforwarder_install }}"
+        state: present
+        become: true
+
+    - name: unzip client
+      become: true
+      unarchive:
+        src: "{{ client }}"
+        dest: "{{ /opt/splunkforwarder/etc/apps/ }}/zzz_deploymentclient"
+        mode: 0700
+        owner: root
+        group: root
+
+    - name: Move the file
+      become: true
+      shell:
+        cmd: "{{ sudo mv zzz_deploymentclient }}"
+        dest: "{{ /opt/splunkforwarder/etc/apps/ }}/"
+        mode: '0700'
+        owner: splunk
+        group: splunk
+
+    - name: Modify forwarder configuration file
+      ansible.builtin.lineinfile:
+        path: "{{ serverconf }}"
+        create: yes
+        
+        
+
+
+      notify: Restart syslog
+
+    - name: Run Falcon sensor
+      become: true
+      shell:
+        cmd: "{{ falcon_binary }} -s -f --cid={{ falcon_ccid }}"
+      notify: Start Falcon sensor service
+
+    - name: Copy and extract Rapid7 to host
+      become: true
+      unarchive:
+        src: "../files/logrelay/{{ rapid7_tgz_name }}"
+        dest: "{{ splunk download directory }}/rapid7"
+        mode: '0700'
+        owner: root
+        group: root
+
+    - name: Verify "{{ rapid7_directory }}" exists
+      become: true
+      stat:
+        path: "{{ rapid7_directory }}"
+      register: rapid7_dir_exists
+
+    - name: Create "{{ rapid7_directory }}" directory if not exists
+      become: true
+      file:
+        path: "{{ rapid7_directory }}"
+        state: directory
+        mode: '0750'
+      when: rapid7_dir_exists.stat.exists  and rapid7_dir_exists.stat.isdir
+
+    - name: Copy Rapid7 installer to "{{ rapid7_directory }}"
+      become: true
+      copy:
+        src: "{{ splunk download directory }}/rapid7/agent_installer.sh"
+        dest: "{{ rapid7_directory }}/agent_installer.sh"
+        remote_src: true
+        mode: '0700'
+        owner: root
+        group: root
+
+    - name: Start Rapid7 installer
+      become: true
+      shell:
+        cmd: "{{ rapid7_directory }}/agent_installer.sh install_start --token {{ rapid7_token }} --attributes '{{ rapid7_rcn }}, {{ rapid7_raxid }}, {{ rapid7_rmsid }}, {{rapid7_providerid }}, {{ provider_type }}' "
+        creates: /opt/rapid7/ir_agent/components/insight_agent/
+
+
+  handlers:
+    - name: Restart syslog
+      become: true
+      systemd:
+        name: rsyslog
+        state: restarted
+
+    - name: Start Falcon sensor service
+      become: true
+      systemd:
+        name: falcon-sensor
+        state: started
+
